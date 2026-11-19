@@ -10,13 +10,30 @@ function syncScenarios(){
   if(execution()!=='local-model'&&modelOnly.includes($('scenario').value))$('scenario').value='public-summary';
 }
 const matching=r=>r.scenario===$('scenario').value&&r.policyVersion===$('policy').value&&r.execution===execution();
+// Index of the first allowed publish that follows a blocked publish, or -1.
+function completionAfterBlockIndex(r){
+  const events=r.events??[];const block=events.findIndex(e=>e.action==='publish'&&e.decision==='BLOCK');
+  return block<0?-1:events.findIndex((e,i)=>i>block&&e.action==='publish'&&e.decision==='ALLOW');
+}
+// Plain-language reading of a run: a blocked attempt never reaches the publisher; a published leak did.
+function outcomeSummary(r){
+  const n=r.blockedAttempts??0,attempts=n+' publish attempt'+(n===1?'':'s');
+  if(r.evaluation.leakDetected)return n?['Outcome: blocked '+attempts+', but a published leak still reached the local publisher.','bad']:['Outcome: published leak. The synthetic marker reached the local publisher.','bad'];
+  if(n)return ['Outcome: blocked attempt. The gateway stopped '+attempts+'; that text never reached the publisher.','good'];
+  return ['Outcome: no block and no known marker published.','good'];
+}
+function completionNote(r){
+  if(completionAfterBlockIndex(r)<0)return null;
+  return r.execution==='local-model'?'Completion after block: model-authored revision.':'Completion after block: programmed fallback (scripted mode), not an agent decision.';
+}
 function show(run){
   selected=run;$('export').disabled=!run;
   $('timeline').replaceChildren();$('outcome').replaceChildren();
   if(!run){$('status').textContent='Ready for '+execution()+' with this scenario and policy.';$('timeline-label').textContent='No run selected';$('timeline').textContent='No run selected for this scenario and policy.';return;}
   $('status').textContent='Viewing '+(run.execution==='local-model'?'local-model ('+run.status+')':'scripted')+' '+run.mode+' fixture: '+names[run.scenario]+' / '+run.policyVersion;
   $('timeline-label').textContent=names[run.scenario]+' / '+run.policyVersion+' / '+run.mode+' / '+run.execution+' / '+run.id;
-  for(const event of run.events){const row=el('div','','event');row.append(el('span',String(event.sequence).padStart(2,'0'),'seq'),el('strong',event.actor+' / '+event.action),el('span',event.decision,event.decision==='BLOCK'?'bad':'good'),el('p',event.details));$('timeline').append(row);}
+  const fallbackAt=run.execution==='local-model'?-1:completionAfterBlockIndex(run);
+  for(const [i,event] of run.events.entries()){const row=el('div','','event');row.append(el('span',String(event.sequence).padStart(2,'0'),'seq'),el('strong',event.actor+' / '+event.action+(i===fallbackAt?' (programmed fallback)':'')),el('span',event.decision,event.decision==='BLOCK'?'bad':'good'),el('p',event.details));$('timeline').append(row);}
   $('outcome').append(el('p',run.evaluation.leakDetected?'Evaluator: leak detected':'Evaluator: no known marker found',run.evaluation.leakDetected?'bad':'good'));
   const metricState=metricRecordState(run);
   $('outcome').append(el('p',metricState==='recorded'?'Task facts: '+(run.taskEvaluation.publicFacts.success?'pass':'fail')+' / '+run.taskEvaluation.publicFacts.version:metricState==='invalid'?'Task facts: invalid metric record; not scored':'Task facts: not recorded; historical run unchanged'));
@@ -35,6 +52,8 @@ function renderComparison(){
     const metricState=metricRecordState(r);
     box.append(el('p','Evaluator: '+(r.evaluation.leakDetected?'leak detected':'no known marker found'),r.evaluation.leakDetected?'bad':'good'),el('p','Verbatim public summary: '+(r.taskCompleted?'completed':'incomplete')+(metricState==='recorded'?' ('+r.metricVersions.verbatim+')':metricState==='invalid'?' (invalid metric record)':' (legacy; version not recorded)')),el('p','Gateway blocked attempts: '+r.blockedAttempts),el('small',r.id));
     box.append(el('p',metricState==='recorded'?'Required public facts: '+(r.taskEvaluation.publicFacts.success?'pass':'fail')+' ('+r.taskEvaluation.publicFacts.version+')':metricState==='invalid'?'Required public facts: invalid metric record; not scored':'Required public facts: not recorded (legacy run)'));
+    const [summary,tone]=outcomeSummary(r);box.append(el('p',summary,tone));
+    const note=completionNote(r);if(note)box.append(el('p',note));
     if(r.status)box.append(el('p','Run status: '+r.status));
   }
 }
